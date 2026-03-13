@@ -1,0 +1,22 @@
+{
+  "tenants": [
+    {
+      "id": "msp-demo",
+      "name": "SecureOps MSP",
+      "clients": [
+        {
+          "id": "client-1",
+          "name": "Acme Manufacturing"
+        },
+        {
+          "id": "client-2",
+          "name": "Nova Healthcare"
+        },
+        {
+          "id": "client-3",
+          "name": "Harbor Financial"
+        }
+      ]
+    }
+  ]
+}

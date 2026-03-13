@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Incident Simulation Studio</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <aside class="sidebar">
+      <div class="brand-wrap">
+        <div class="brand">Incident<br>Simulation Studio</div>
+        <div class="subbrand">Polished accessible build</div>
+      </div>
+      <nav>
+        <button type="button" class="nav-btn active" data-tab="login">Login</button>
+        <button type="button" class="nav-btn" data-tab="dashboard">Dashboard</button>
+        <button type="button" class="nav-btn" data-tab="library">Scenario Library</button>
+        <button type="button" class="nav-btn" data-tab="setup">Exercise Setup</button>
+        <button type="button" class="nav-btn" data-tab="notify">Notify Team</button>
+        <button type="button" class="nav-btn" data-tab="run">Guided Run</button>
+        <button type="button" class="nav-btn" data-tab="documents">Documents</button>
+      </nav>
+      <div class="sidebar-footer">
+        <button type="button" id="resetBtn" class="nav-btn danger">Reset Page</button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h1>Incident Simulation Studio</h1>
+          <p class="muted">Polished, easier-to-read interface with all 100 scenarios and all 100 playbooks loaded.</p>
+        </div>
+        <div class="top-actions">
+          <span id="tenantBadge" class="badge">No tenant</span>
+          <span id="userBadge" class="badge">Signed out</span>
+          <button type="button" id="logoutBtn" class="btn secondary">Log Off</button>
+        </div>
+      </header>
+
+      <section id="loginTab" class="tab active"></section>
+      <section id="dashboardTab" class="tab"></section>
+      <section id="libraryTab" class="tab"></section>
+      <section id="setupTab" class="tab"></section>
+      <section id="notifyTab" class="tab"></section>
+      <section id="runTab" class="tab"></section>
+      <section id="documentsTab" class="tab"></section>
+    </main>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,7 @@
+{
+  "fixed": [
+    "Verify MFA now lands directly on dashboard",
+    "Scenario Choose buttons now work and open scenario setup"
+  ],
+  "scope": "Only MFA navigation, scenario choose action, and direct dependencies were changed."
+}

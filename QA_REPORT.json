@@ -1,0 +1,14 @@
+{
+  "fixed_items": [
+    "Restored missing artifact engine helpers",
+    "Restored missing inject engine helpers",
+    "Restored missing step note helpers",
+    "Repaired MFA post-login flow",
+    "Made scenario selection initialize inject/environment state",
+    "Kept renderDocuments and openForm startup safeguards"
+  ],
+  "noted_risks": [
+    "Live notifications still require Vercel environment variables for SendGrid/Twilio",
+    "Saved simulations remain browser-session based unless backend persistence is added"
+  ]
+}
