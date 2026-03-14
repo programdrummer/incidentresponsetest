@@ -135,3 +135,6 @@ QA fixes in this build:
 Targeted fixes in this build:
 - Verify MFA now opens the dashboard immediately after successful code entry
 - Scenario Choose buttons now bind directly after rendering and switch to setup correctly
+
+Targeted update in this build:
+- auto inject timer now uses minutes instead of seconds

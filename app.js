@@ -18,7 +18,7 @@ const state={
   exportReady:false,
   revealedInjectCount:1,
   injectAutoRun:false,
-  injectIntervalSeconds:30,
+  injectIntervalMinutes:1,
   injectTimer:null
 };
 
@@ -640,7 +640,7 @@ function startInjectTimer(){
       stopInjectTimer();
       renderRun();
     }
-  }, Math.max(5, Number(state.injectIntervalSeconds || 30)) * 1000);
+  }, Math.max(5, Number(state.injectIntervalMinutes || 1)) * 60 * 1000);
 }
 function renderNotify(){
   if(!state.user){
@@ -770,7 +770,7 @@ function renderRun(){
         <div><strong>Inject Controls</strong></div>
         <div class="row" style="margin-top:10px">
           <button type="button" class="btn secondary" id="revealInjectBtn" ${state.revealedInjectCount >= timeline.length ? "disabled" : ""}>Reveal Next Inject</button>
-          <input id="injectIntervalBox" class="input" type="number" min="5" value="${escapeAttr(state.injectIntervalSeconds || 30)}" style="max-width:120px">
+          <label class="small" for="injectIntervalBox" style="display:flex;align-items:center;gap:8px">Auto inject interval (minutes)<input id="injectIntervalBox" class="input" type="number" min="1" value="${escapeAttr(state.injectIntervalMinutes || 1)}" style="max-width:120px"></label>
           <button type="button" class="btn secondary" id="startInjectBtn">${state.injectAutoRun ? "Auto Injects Running" : "Start Auto Injects"}</button>
           <button type="button" class="btn secondary" id="stopInjectBtn">Stop Auto Injects</button>
         </div>
@@ -820,7 +820,7 @@ function renderRun(){
     nextBtn.onclick=()=>{ if(state.currentStepIndex<steps.length-1){ state.currentStepIndex+=1; state.revealedInjectCount=Math.max(state.revealedInjectCount,state.currentStepIndex+1); renderRun(); } };
   }
   if(byId("revealInjectBtn")) byId("revealInjectBtn").onclick=()=>revealNextInject();
-  if(byId("startInjectBtn")) byId("startInjectBtn").onclick=()=>{ state.injectIntervalSeconds=Number(byId("injectIntervalBox").value||30); startInjectTimer(); renderRun(); };
+  if(byId("startInjectBtn")) byId("startInjectBtn").onclick=()=>{ state.injectIntervalMinutes=Number(byId("injectIntervalBox").value||1); startInjectTimer(); renderRun(); };
   if(byId("stopInjectBtn")) byId("stopInjectBtn").onclick=()=>{ stopInjectTimer(); renderRun(); };
 }
 function saveSimulationSummary(){
