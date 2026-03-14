@@ -138,3 +138,6 @@ Targeted fixes in this build:
 
 Targeted update in this build:
 - auto inject timer now uses minutes instead of seconds
+
+Targeted update in this build:
+- fixed team members added under Exercise Setup so they transfer automatically into the Notification Center

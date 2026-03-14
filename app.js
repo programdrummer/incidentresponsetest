@@ -446,13 +446,13 @@ function notificationRows(){
   const rows=allTaskRows();
   const byMember={};
 
-  // Start with every saved team member so they are available on the notification screen.
+  // Always carry every saved team member into Notification Center
   state.team.forEach(member=>{
     byMember[member.id]={member, roles:new Set(), tasks:[]};
-    if(member.role){ byMember[member.id].roles.add(member.role); }
+    if(member.role) byMember[member.id].roles.add(member.role);
   });
 
-  // Add explicit role assignments from the role table.
+  // Apply role assignments
   Object.entries(state.roleAssignments).forEach(([role, memberId])=>{
     const member=state.team.find(m=>m.id===memberId);
     if(!member) return;
@@ -460,18 +460,21 @@ function notificationRows(){
     byMember[memberId].roles.add(role);
   });
 
-  // Add task assignments and inherited role assignments from playbook steps.
+  // Apply explicit task assignments or inherited role matches
   rows.forEach(r=>{
-    const fallbackMemberId = state.taskAssignments[r.key] || state.roleAssignments[r.role] || state.team.find(m=>normalizeRole(m.role)===normalizeRole(r.role))?.id;
-    if(!fallbackMemberId) return;
-    const member=state.team.find(m=>m.id===fallbackMemberId);
+    const inheritedMemberId =
+      state.taskAssignments[r.key] ||
+      state.roleAssignments[r.role] ||
+      state.team.find(m=>normalizeRole(m.role)===normalizeRole(r.role))?.id;
+
+    if(!inheritedMemberId) return;
+    const member=state.team.find(m=>m.id===inheritedMemberId);
     if(!member) return;
-    if(!byMember[fallbackMemberId]) byMember[fallbackMemberId]={member, roles:new Set(), tasks:[]};
-    byMember[fallbackMemberId].roles.add(r.role);
-    byMember[fallbackMemberId].tasks.push(`${r.stepName}: ${r.task}`);
+    if(!byMember[inheritedMemberId]) byMember[inheritedMemberId]={member, roles:new Set(), tasks:[]};
+    byMember[inheritedMemberId].roles.add(r.role);
+    byMember[inheritedMemberId].tasks.push(`${r.stepName}: ${r.task}`);
   });
 
-  // Return all saved team members, with any roles/tasks found.
   return Object.values(byMember);
 }
 
