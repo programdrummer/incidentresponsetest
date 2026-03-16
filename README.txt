@@ -141,3 +141,6 @@ Targeted update in this build:
 
 Targeted update in this build:
 - fixed team members added under Exercise Setup so they transfer automatically into the Notification Center
+
+Targeted update in this build:
+- fixed auto inject timer so it starts and advances injects automatically as designed

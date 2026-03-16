@@ -634,6 +634,7 @@ function stopInjectTimer(){
 function startInjectTimer(){
   stopInjectTimer();
   state.injectAutoRun = true;
+  const intervalMinutes = Math.max(1, Number(state.injectIntervalMinutes || 1));
   state.injectTimer = setInterval(()=>{
     const timeline = scenarioTimeline();
     if(state.revealedInjectCount < timeline.length){
@@ -643,7 +644,7 @@ function startInjectTimer(){
       stopInjectTimer();
       renderRun();
     }
-  }, Math.max(5, Number(state.injectIntervalMinutes || 1)) * 60 * 1000);
+  }, intervalMinutes * 60 * 1000);
 }
 function renderNotify(){
   if(!state.user){
@@ -823,7 +824,7 @@ function renderRun(){
     nextBtn.onclick=()=>{ if(state.currentStepIndex<steps.length-1){ state.currentStepIndex+=1; state.revealedInjectCount=Math.max(state.revealedInjectCount,state.currentStepIndex+1); renderRun(); } };
   }
   if(byId("revealInjectBtn")) byId("revealInjectBtn").onclick=()=>revealNextInject();
-  if(byId("startInjectBtn")) byId("startInjectBtn").onclick=()=>{ state.injectIntervalMinutes=Number(byId("injectIntervalBox").value||1); startInjectTimer(); renderRun(); };
+  if(byId("startInjectBtn")) byId("startInjectBtn").onclick=()=>{ state.injectIntervalMinutes=Number(byId("injectIntervalBox").value||1); startInjectTimer(); byId("startInjectBtn").textContent = "Auto Injects Running"; };
   if(byId("stopInjectBtn")) byId("stopInjectBtn").onclick=()=>{ stopInjectTimer(); renderRun(); };
 }
 function saveSimulationSummary(){
