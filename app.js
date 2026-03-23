@@ -205,6 +205,213 @@ function logOff(){
   renderAll();
   setTab("login");
 }
+
+function persistState(){
+  try{
+    const keep = {
+      completedSimulations: state.completedSimulations || [],
+      customScenarios: state.customScenarios || [],
+      customPlaybooks: state.customPlaybooks || [],
+      readinessTrend: state.readinessTrend || [],
+      whiteLabelName: state.whiteLabelName || "",
+      badgeState: state.badgeState || []
+    };
+    localStorage.setItem("incidentSimulatorStateV7", JSON.stringify(keep));
+  }catch(e){}
+}
+function loadPersistedState(){
+  try{
+    const raw = localStorage.getItem("incidentSimulatorStateV7");
+    if(!raw) return;
+    const keep = JSON.parse(raw);
+    state.completedSimulations = keep.completedSimulations || [];
+    state.customScenarios = keep.customScenarios || [];
+    state.customPlaybooks = keep.customPlaybooks || [];
+    state.readinessTrend = keep.readinessTrend || [];
+    state.whiteLabelName = keep.whiteLabelName || "";
+    state.badgeState = keep.badgeState || [];
+  }catch(e){}
+}
+function logAction(action, detail="", actor="System"){
+  state.actionLog = state.actionLog || [];
+  state.actionLog.push({
+    ts: new Date().toISOString(),
+    action,
+    detail,
+    actor
+  });
+}
+function complianceMap(stepName){
+  const s = String(stepName || "").toLowerCase();
+  if(s.includes("detect")) return {nist:"NIST 800-61 Detection & Analysis", cmmc:"IR.L2-3.6.1", cis:"CIS Control 8"};
+  if(s.includes("triage") || s.includes("analysis") || s.includes("scope")) return {nist:"NIST 800-61 Analysis", cmmc:"IR.L2-3.6.2", cis:"CIS Control 8 / 13"};
+  if(s.includes("contain")) return {nist:"NIST 800-61 Containment", cmmc:"IR.L2-3.6.3", cis:"CIS Control 17"};
+  if(s.includes("erad")) return {nist:"NIST 800-61 Eradication", cmmc:"IR.L2-3.6.3", cis:"CIS Control 17"};
+  if(s.includes("recover")) return {nist:"NIST 800-61 Recovery", cmmc:"IR.L2-3.6.3", cis:"CIS Control 11"};
+  if(s.includes("commun")) return {nist:"NIST 800-61 Reporting/Coordination", cmmc:"IR.L2-3.6.1", cis:"CIS Control 17"};
+  if(s.includes("after")) return {nist:"NIST 800-61 Post-Incident Activity", cmmc:"IR.L2-3.6.1", cis:"CIS Control 17"};
+  return {nist:"NIST 800-61 Incident Handling", cmmc:"IR.L2-3.6.x", cis:"CIS Control 17"};
+}
+function aiFacilitatorPrompts(stepName){
+  const s=String(stepName||"").toLowerCase();
+  if(s.includes("detect")) return ["A user reports a suspicious email. What evidence do you review first?","The CFO asks if this looks real. What do you say?"];
+  if(s.includes("triage")) return ["Do you declare an incident now or gather more evidence first?","What is the potential business impact if the account is compromised?"];
+  if(s.includes("contain")) return ["Attacker just escalated access. Which control do you trigger immediately?","How do you contain without breaking critical business access?"];
+  if(s.includes("analysis") || s.includes("scope")) return ["What systems still need scoping?","If this affected more than one account, how would your response change?"];
+  if(s.includes("recover")) return ["What must be validated before you restore normal operations?","How do you prove recovery is complete?"];
+  if(s.includes("after")) return ["What went well?","What control failed or was missing?"];
+  return ["What is your next best action?","What would you escalate to leadership right now?"];
+}
+function currentScoreSummary(){
+  const totalSteps = (currentPlaybook()?.steps || []).length || 1;
+  const completedSteps = Math.min(state.currentStepIndex + 1, totalSteps);
+  const evidenceCount = (state.evidenceLog || []).length;
+  const decisions = (state.decisionLog || []).length;
+  const noteCount = Object.keys(state.stepNotes || {}).length;
+  const base = Math.min(100, 35 + completedSteps*6 + evidenceCount*3 + decisions*3 + noteCount*2);
+  const maturity = base >= 85 ? "Advanced" : base >= 65 ? "Intermediate" : "Beginner";
+  return {score: base, maturity};
+}
+function roleScoreMap(){
+  const scores = {};
+  (state.team || []).forEach(m=>{
+    scores[m.role || m.title || "Unassigned"] = 60;
+  });
+  (state.decisionLog || []).forEach(d=>{
+    if(d.role){
+      scores[d.role] = Math.min(100, (scores[d.role] || 60) + (d.quality === "Strong" ? 8 : d.quality === "Weak" ? -4 : 2));
+    }
+  });
+  return scores;
+}
+function afterActionIntelligence(){
+  const score = currentScoreSummary();
+  const gaps = [];
+  const strengths = [];
+  if(Object.keys(state.stepNotes || {}).length < 3) gaps.push("Limited step documentation captured during the exercise.");
+  else strengths.push("The team documented actions during the exercise.");
+  if((state.evidenceLog || []).length < 2) gaps.push("Evidence collection activity was limited.");
+  else strengths.push("Evidence collection was actively recorded.");
+  if((state.decisionLog || []).length < 2) gaps.push("Few decision points were formally recorded.");
+  else strengths.push("Decision tracking supported post-incident review.");
+  const recs = [
+    "Formalize role-based response responsibilities in the playbook.",
+    "Increase evidence capture and chain-of-custody discipline.",
+    "Map the exercise output to compliance reporting requirements."
+  ];
+  return {score: score.score, maturity: score.maturity, strengths, gaps, recommendations: recs};
+}
+function addEvidence(itemType, note, stepName){
+  state.evidenceLog = state.evidenceLog || [];
+  state.evidenceLog.push({
+    ts: new Date().toISOString(),
+    step: stepName || "",
+    itemType,
+    note
+  });
+  logAction("Evidence Collected", `${itemType}: ${note}`, "Exercise Team");
+  persistState();
+}
+function addDecision(stepName, role, decision, quality){
+  state.decisionLog = state.decisionLog || [];
+  state.decisionLog.push({
+    ts: new Date().toISOString(),
+    step: stepName || "",
+    role: role || "",
+    decision,
+    quality
+  });
+  logAction("Decision Recorded", `${stepName}: ${decision}`, role || "Exercise Team");
+}
+function exportAuditJson(){
+  const payload = {
+    scenario: currentScenario()?.title || "",
+    savedAt: new Date().toISOString(),
+    actions: state.actionLog || [],
+    evidence: state.evidenceLog || [],
+    decisions: state.decisionLog || [],
+    stepNotes: state.stepNotes || {},
+    compliance: (currentPlaybook()?.steps || []).map(st => complianceMap(typeof st === "string" ? st : (st.name || st.step_name)))
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], {type:"application/json"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "simulation_audit_report.json";
+  a.click();
+  setTimeout(()=>URL.revokeObjectURL(url), 60000);
+}
+function exportBoardPdf(){
+  const ai = afterActionIntelligence();
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Executive Report</title><style>
+  body{font-family:Arial,sans-serif;margin:0;background:#f4f7fb;color:#17212f}
+  .toolbar{background:#16324f;color:#fff;padding:12px 16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .toolbar button{padding:10px 14px;border:0;border-radius:8px;cursor:pointer}
+  .page{width:8.5in;min-height:11in;margin:18px auto;background:#fff;padding:.6in;box-shadow:0 10px 30px rgba(0,0,0,.12)}
+  .box{border:1px solid #cbd7e3;background:#f8fbfd;padding:12px;border-radius:10px;margin-top:16px}
+  @media print{.toolbar{display:none}.page{margin:0;box-shadow:none;width:auto;min-height:auto}body{background:#fff}}
+  </style></head><body><div class="toolbar"><strong>Executive Report</strong><button onclick="window.print()">Print / Save as PDF</button><button onclick="window.close()">Close</button></div><div class="page">
+  <h1 style="margin-top:0">Executive Tabletop Exercise Report</h1>
+  <div class="box"><strong>Scenario</strong><div style="margin-top:8px">${escapeHtml(currentScenario()?.title || "")}</div></div>
+  <div class="box"><strong>Readiness</strong><div style="margin-top:8px">Score: ${ai.score} / 100 — ${ai.maturity}</div></div>
+  <div class="box"><strong>Strengths</strong><ul>${ai.strengths.map(x=>`<li>${escapeHtml(x)}</li>`).join("")}</ul></div>
+  <div class="box"><strong>Gaps</strong><ul>${ai.gaps.map(x=>`<li>${escapeHtml(x)}</li>`).join("")}</ul></div>
+  <div class="box"><strong>Recommendations</strong><ul>${ai.recommendations.map(x=>`<li>${escapeHtml(x)}</li>`).join("")}</ul></div>
+  </div></body></html>`;
+  const blob = new Blob([html], {type:"text/html"});
+  const url = URL.createObjectURL(blob);
+  const w = window.open(url, "_blank", "noopener,noreferrer");
+  if(!w){ const a=document.createElement("a"); a.href=url; a.target="_blank"; a.click(); }
+  setTimeout(()=>URL.revokeObjectURL(url), 60000);
+}
+function openScenarioBuilder(){
+  setTab("builder");
+}
+function saveCustomScenario(){
+  const title = byId("builderScenarioTitle")?.value?.trim();
+  const incident = byId("builderIncidentType")?.value?.trim();
+  if(!title || !incident){ alert("Enter a scenario title and incident type."); return; }
+  const newId = `custom-${Date.now()}`;
+  const scenario = {
+    id: newId,
+    title,
+    incidentType: incident,
+    startingSituation: byId("builderStart")?.value?.trim() || "Custom scenario",
+    timeline: [
+      {time:"T0", event: byId("builderInject1")?.value?.trim() || "Initial inject"},
+      {time:"T+30m", event: byId("builderInject2")?.value?.trim() || "Second inject"},
+      {time:"T+60m", event: byId("builderInject3")?.value?.trim() || "Escalation inject"}
+    ]
+  };
+  const playbook = {
+    scenarioTitle: title,
+    steps: ["Detection","Triage","Containment","Analysis","Recovery","After Action Review"]
+  };
+  scenarios.push(scenario);
+  playbooks.push(playbook);
+  state.customScenarios.push(scenario);
+  state.customPlaybooks.push(playbook);
+  persistState();
+  alert("Custom scenario saved to this browser session.");
+  renderBuilder();
+  renderLibrary();
+}
+function recordStepStart(stepName){
+  if(state.currentStepStartedAtStep !== stepName){
+    state.currentStepStartedAt = Date.now();
+    state.currentStepStartedAtStep = stepName;
+  }
+}
+function currentStepElapsedMinutes(){
+  if(!state.currentStepStartedAt) return 0;
+  return Math.floor((Date.now() - state.currentStepStartedAt)/(60*1000));
+}
+function slaWarning(stepName){
+  const target = state.slaTargets?.[stepName] || 0;
+  const elapsed = currentStepElapsedMinutes();
+  if(target && elapsed > target) return `SLA warning: ${stepName} exceeded ${target} minutes.`;
+  return "";
+}
 function setTab(tab){
   if(tab !== "login" && !state.user){ alert("Sign in first."); return; }
   state.tab = tab;
@@ -276,11 +483,13 @@ function verifyMfa(){
 function renderDashboard(){
   if(!state.user){ byId("dashboardTab").innerHTML=`<div class="card"><div class="warn">Sign in first.</div></div>`; return; }
   byId("tenantBadge").textContent=`${tenantDisplayName()} / ${clientDisplayName()}`;
+  const score = currentScoreSummary();
+  const roleScores = roleScoreMap();
   byId("dashboardTab").innerHTML=`<div class="grid g4">
     <div class="card"><div class="small">Scenarios Loaded</div><div class="metric">${scenarios.length}</div></div>
     <div class="card"><div class="small">Playbooks Loaded</div><div class="metric">${playbooks.length}</div></div>
-    <div class="card"><div class="small">Current Scenario</div><div class="metric" style="font-size:22px">${escapeHtml(currentScenario()?.title || "None")}</div></div>
-    <div class="card"><div class="small">Team Members</div><div class="metric">${state.team.length}</div></div>
+    <div class="card"><div class="small">Readiness Score</div><div class="metric">${score.score}</div><div class="small">${escapeHtml(score.maturity)}</div></div>
+    <div class="card"><div class="small">Audit Entries</div><div class="metric">${(state.actionLog||[]).length}</div></div>
   </div>
   <div class="grid g2">
     <div class="card">
@@ -291,6 +500,8 @@ function renderDashboard(){
       <select id="clientSelect" class="select">${(currentTenant()?.clients||[]).map(c=>`<option value="${escapeAttr(c.id)}" ${c.id===state.selectedClientId?'selected':''}>${escapeHtml(c.name)}</option>`).join("")}</select>
       <div class="small" style="margin-top:10px">Custom tenant context name</div>
       <input id="customTenantName" class="input" placeholder="Optional custom tenant name..." value="${escapeAttr(state.customTenantName || "")}">
+      <div class="small" style="margin-top:10px">White-label display name</div>
+      <input id="whiteLabelName" class="input" placeholder="Optional brand name..." value="${escapeAttr(state.whiteLabelName || "")}">
       <div class="task-card" style="margin-top:12px">
         <div><strong>Suggested Hardware and Software for This Scenario</strong></div>
         <div class="small" style="margin-top:6px">These recommended systems will be used by the simulator as the fictitious environment reference for this scenario.</div>
@@ -299,12 +510,34 @@ function renderDashboard(){
       <div class="row" style="margin-top:12px"><button type="button" class="btn primary" id="saveTenantBtn">Save Context</button></div>
     </div>
     <div class="card">
-      <h2 style="margin-top:0">Quick Start</h2>
+      <h2 style="margin-top:0">Quick Start & Controls</h2>
       <div class="stack">
-        <button type="button" class="btn secondary" id="qsLibraryBtn">Browse all 100 scenarios</button>
+        <button type="button" class="btn secondary" id="qsLibraryBtn">Browse all scenarios</button>
         <button type="button" class="btn secondary" id="qsSetupBtn">Set up the selected scenario</button>
         <button type="button" class="btn secondary" id="qsRunBtn">Open the guided run</button>
+        <button type="button" class="btn secondary" id="openBuilderBtn">Open scenario builder</button>
       </div>
+      <div class="grid g2" style="margin-top:12px">
+        <div><div class="small">Exercise mode</div><select id="exerciseModeSelect" class="select"><option ${state.exerciseMode==="Training"?"selected":""}>Training</option><option ${state.exerciseMode==="Certification"?"selected":""}>Certification</option></select></div>
+        <div><div class="small">Role-based view</div><select id="roleViewSelect" class="select"><option ${state.roleView==="All Roles"?"selected":""}>All Roles</option>${availableRoles.map(r=>`<option ${state.roleView===r?"selected":""}>${escapeHtml(r)}</option>`).join("")}</select></div>
+      </div>
+      <div class="row" style="margin-top:12px"><button type="button" class="btn primary" id="saveControlPrefsBtn">Save Controls</button><button type="button" class="btn secondary" id="boardReportBtn">Executive Report</button><button type="button" class="btn secondary" id="auditExportBtn">Audit JSON</button></div>
+    </div>
+  </div>
+  <div class="grid g2">
+    <div class="card">
+      <h2 style="margin-top:0">Compliance & Governance</h2>
+      <div class="notice">This simulator now maps current steps to NIST 800-61, CMMC incident response practices, and CIS Controls. Use the Governance tab for a deeper view.</div>
+      <div class="small" style="margin-top:10px">Role scores</div>
+      <div class="table-wrap" style="margin-top:8px"><table><thead><tr><th>Role</th><th>Score</th></tr></thead><tbody>${Object.keys(roleScores).length ? Object.entries(roleScores).map(([role,score])=>`<tr><td>${escapeHtml(role)}</td><td>${escapeHtml(String(score))}</td></tr>`).join("") : '<tr><td colspan="2">No scores yet.</td></tr>'}</tbody></table></div>
+    </div>
+    <div class="card">
+      <h2 style="margin-top:0">Multi-Tenant MSP Snapshot</h2>
+      <div class="notice">Current tenant: ${escapeHtml(tenantDisplayName())}</div>
+      <div class="small" style="margin-top:8px">Saved simulations: ${(state.completedSimulations||[]).length}</div>
+      <div class="small">Custom scenarios: ${(state.customScenarios||[]).length}</div>
+      <div class="small">Trend history entries: ${(state.readinessTrend||[]).length}</div>
+      <div class="small" style="margin-top:8px">This is front-end tenant context and reporting. True tenant separation still requires backend architecture.</div>
     </div>
   </div>`;
   byId("saveTenantBtn").onclick=()=>{
@@ -312,14 +545,26 @@ function renderDashboard(){
     const kids=(tenants.find(t=>t.id===state.selectedTenantId)?.clients)||[];
     state.selectedClientId=byId("clientSelect")?.value || kids[0]?.id || "";
     state.customTenantName = byId("customTenantName")?.value?.trim() || "";
+    state.whiteLabelName = byId("whiteLabelName")?.value?.trim() || "";
     state.environmentSystems = suggestedSystemsForScenario();
     byId("tenantBadge").textContent=`${tenantDisplayName()} / ${clientDisplayName()}`;
+    persistState();
+    logAction("Context Saved", `${tenantDisplayName()} / ${clientDisplayName()}`, "User");
     renderDashboard();
     alert("Context has been saved.");
   };
   byId("qsLibraryBtn").onclick=()=>setTab("library");
   byId("qsSetupBtn").onclick=()=>setTab("setup");
   byId("qsRunBtn").onclick=()=>setTab("run");
+  byId("openBuilderBtn").onclick=()=>openScenarioBuilder();
+  byId("saveControlPrefsBtn").onclick=()=>{
+    state.exerciseMode = byId("exerciseModeSelect").value;
+    state.roleView = byId("roleViewSelect").value;
+    persistState();
+    renderDashboard();
+  };
+  byId("boardReportBtn").onclick=()=>exportBoardPdf();
+  byId("auditExportBtn").onclick=()=>exportAuditJson();
 }
 function renderLibrary(){
   if(!state.user){ byId("libraryTab").innerHTML=`<div class="card"><div class="warn">Sign in first.</div></div>`; return; }
@@ -673,6 +918,9 @@ function renderNotify(){
       <div class="notice" style="margin-top:10px"><strong>Scheduled meeting:</strong> ${escapeHtml(state.meetingTime || "Not set")}</div>
       <div style="margin-top:10px"><div class="small">Notes / instructions</div><textarea id="meetNotes" class="textarea">${escapeHtml(state.meetingNotes)}</textarea></div>
       <div class="row" style="margin-top:12px">
+        <label class="small"><input id="simNotifyBox" type="checkbox" ${state.simulatedNotifications ? "checked" : ""}> Simulated notifications only</label>
+      </div>
+      <div class="row" style="margin-top:12px">
         <button type="button" class="btn secondary" id="saveNotifySettingsBtn">Save Details</button>
         <button type="button" class="btn primary" id="generatePreviewBtn">Generate Preview</button>
       </div>
@@ -711,6 +959,7 @@ function renderNotify(){
     state.meetingTimeOnly = byId("meetTimeOnly").value || state.meetingTimeOnly;
     syncMeetingTimestamp();
     state.meetingNotes = byId("meetNotes").value.trim();
+    state.simulatedNotifications = !!byId("simNotifyBox").checked;
   }
 
   byId("saveNotifySettingsBtn").onclick = () => {
@@ -737,9 +986,14 @@ function renderNotify(){
         syncFormToState();
         sendBtn.disabled = true;
         sendBtn.textContent = "Sending...";
-        const result = await sendLiveNotifications();
-        state.notificationsSent = true;
-        alert(`Notifications sent. Emails: ${result.emailCount || 0}. Texts: ${result.smsCount || 0}.`);
+        if(state.simulatedNotifications){
+          state.notificationsSent = true;
+          alert("Simulated notifications recorded. No live messages were sent.");
+        } else {
+          const result = await sendLiveNotifications();
+          state.notificationsSent = true;
+          alert(`Notifications sent. Emails: ${result.emailCount || 0}. Texts: ${result.smsCount || 0}.`);
+        }
         renderNotify();
       }catch(err){
         alert(`Notification send failed: ${err.message}`);
@@ -759,11 +1013,17 @@ function renderRun(){
   const steps=playbook.steps||[];
   const currentStep=steps[state.currentStepIndex];
   const currentStepName=typeof currentStep==="string" ? currentStep : (currentStep?.name || currentStep?.step_name);
+  recordStepStart(currentStepName);
   const currentTasks=buildStepTasks(currentStep);
   const timeline=scenarioTimeline();
   if(!state.revealedInjectCount || state.revealedInjectCount < 1) state.revealedInjectCount = 1;
   const shownInjects = timeline.slice(0, state.revealedInjectCount);
+  const compliance = complianceMap(currentStepName);
   const artifacts = stepArtifacts(currentStepName);
+  const prompts = aiFacilitatorPrompts(currentStepName);
+  const elapsed = currentStepElapsedMinutes();
+  const sla = slaWarning(currentStepName);
+  const filteredTasks = state.roleView && state.roleView !== "All Roles" ? currentTasks.filter(t=>t.role===state.roleView) : currentTasks;
 
   byId("runTab").innerHTML=`<div class="grid g2">
     <div class="card">
@@ -779,19 +1039,25 @@ function renderRun(){
           <button type="button" class="btn secondary" id="stopInjectBtn">Stop Auto Injects</button>
         </div>
       </div>
+      <div class="task-card" style="margin-top:12px">
+        <div><strong>AI Facilitator</strong></div>
+        <ul style="margin:10px 0 0 18px">${prompts.map(p=>`<li>${escapeHtml(p)}</li>`).join("")}</ul>
+      </div>
+      <div class="task-card" style="margin-top:12px">
+        <div><strong>Compliance Mapping</strong></div>
+        <div class="small" style="margin-top:8px">NIST: ${escapeHtml(compliance.nist)}</div>
+        <div class="small">CMMC: ${escapeHtml(compliance.cmmc)}</div>
+        <div class="small">CIS: ${escapeHtml(compliance.cis)}</div>
+      </div>
     </div>
 
     <div class="card">
       <h2>Current Guided Step</h2>
       <div class="notice"><strong>${escapeHtml(currentStepName||"Step")}</strong></div>
-      <div class="task-card" style="margin-top:12px">
-        <div><strong>What this step means</strong></div>
-        <div class="small" style="margin-top:6px;color:#2f4358">${escapeHtml(stepMeaning(currentStepName))}</div>
-      </div>
-      <div class="task-card" style="margin-top:12px">
-        <div><strong>How to accomplish this step</strong></div>
-        <ul style="margin:10px 0 0 18px; padding:0">${stepHowTo(currentStepName).map(item=>`<li style="margin:6px 0; color:#2f4358">${escapeHtml(item)}</li>`).join("")}</ul>
-      </div>
+      <div class="small" style="margin-top:8px">Mode: ${escapeHtml(state.exerciseMode)} · Role View: ${escapeHtml(state.roleView)} · Step Timer: ${elapsed} minute(s)</div>
+      ${sla ? `<div class="warn" style="margin-top:10px">${escapeHtml(sla)}</div>` : ""}
+      ${state.exerciseMode !== "Certification" ? `<div class="task-card" style="margin-top:12px"><div><strong>What this step means</strong></div><div class="small" style="margin-top:6px;color:#2f4358">${escapeHtml(stepMeaning(currentStepName))}</div></div>` : ""}
+      ${state.exerciseMode !== "Certification" ? `<div class="task-card" style="margin-top:12px"><div><strong>How to accomplish this step</strong></div><ul style="margin:10px 0 0 18px; padding:0">${stepHowTo(currentStepName).map(item=>`<li style="margin:6px 0; color:#2f4358">${escapeHtml(item)}</li>`).join("")}</ul></div>` : ""}
       <div class="task-card" style="margin-top:12px">
         <div><strong>Equipment / Software to Review</strong></div>
         <ul style="margin:10px 0 0 18px">${stepTools(currentStepName).map(t=>`<li style="margin:6px 0;color:#2f4358">${escapeHtml(t)}</li>`).join("")}</ul>
@@ -801,8 +1067,16 @@ function renderRun(){
         <div class="small" style="margin-top:6px">Open realistic example artifacts tied to this phase of the exercise.</div>
         <div style="margin-top:8px">${artifacts.map(a=>`<span class="badge-link" onclick="openGeneratedArtifact('${escapeAttr(a)}','${escapeAttr(currentStepName||"Step")}')">${escapeHtml(a)}</span>`).join("")}</div>
       </div>
+      <div class="task-card" style="margin-top:12px">
+        <div><strong>Decision & Branching</strong></div>
+        <div class="grid g2" style="margin-top:10px">
+          <div><input id="decisionTextBox" class="input" placeholder="Record the team decision for this step"></div>
+          <div><select id="decisionQualityBox" class="select"><option>Strong</option><option>Acceptable</option><option>Weak</option></select></div>
+        </div>
+        <div class="row" style="margin-top:10px"><button type="button" class="btn secondary" id="saveDecisionBtn">Record Decision</button><button type="button" class="btn secondary" id="collectEvidenceBtn">Collect Evidence</button></div>
+      </div>
       <div class="stack" style="margin-top:12px">
-        ${currentTasks.map((t,idx)=>{const key=`${state.currentStepIndex}:${idx}`; const person=assignedNameForTask(key, t.role); return `<div class="task-card"><div><strong>${escapeHtml(t.task)}</strong></div><div class="small">Role: ${escapeHtml(t.role)} · Assigned to: ${escapeHtml(person || "Unassigned")}</div><div style="margin-top:8px">${docsForTask(t.task).map(doc=>`<span class="badge-link" onclick="openForm('${escapeAttr(doc)}','${escapeAttr(t.task)}','${escapeAttr(person||"")}')">${escapeHtml(doc)}</span>`).join("")}<span class="badge-link" onclick="openStepNotes('${escapeAttr(key)}','${escapeAttr(currentStepName||'Step')}','${escapeAttr(t.task)}')">Step Notes</span></div></div>`;}).join("")}
+        ${filteredTasks.map((t,idx)=>{const key=`${state.currentStepIndex}:${idx}`; const person=assignedNameForTask(key, t.role); return `<div class="task-card"><div><strong>${escapeHtml(t.task)}</strong></div><div class="small">Role: ${escapeHtml(t.role)} · Assigned to: ${escapeHtml(person || "Unassigned")}</div><div style="margin-top:8px">${docsForTask(t.task).map(doc=>`<span class="badge-link" onclick="openForm('${escapeAttr(doc)}','${escapeAttr(t.task)}','${escapeAttr(person||"")}')">${escapeHtml(doc)}</span>`).join("")}<span class="badge-link" onclick="openStepNotes('${escapeAttr(key)}','${escapeAttr(currentStepName||'Step')}','${escapeAttr(t.task)}')">Step Notes</span></div></div>`;}).join("") || '<div class="warn">No tasks match the current role-based view.</div>'}
       </div>
       <div class="row" style="margin-top:12px">
         <button type="button" class="btn secondary" id="prevStepBtn" ${state.currentStepIndex===0?"disabled":""}>Previous Step</button>
@@ -810,108 +1084,73 @@ function renderRun(){
       </div>
     </div>
   </div>
-  <div class="card"><h3 style="margin-top:0">Overview of All Titles, Tasks, and Assignments</h3><div class="table-wrap"><table><thead><tr><th>Step</th><th>Task</th><th>Role</th><th>Assigned Person</th></tr></thead><tbody>
-  ${allTaskRows().map(r=>`<tr><td>${escapeHtml(r.stepName)}</td><td>${escapeHtml(r.task)}</td><td>${escapeHtml(r.role)}</td><td>${escapeHtml(assignedNameForTask(r.key, r.role) || "Unassigned")}</td></tr>`).join("")}
-  </tbody></table></div></div>`;
+  <div class="grid g2">
+    <div class="card"><h3 style="margin-top:0">Evidence Collection</h3><div class="table-wrap"><table><thead><tr><th>Time</th><th>Step</th><th>Type</th><th>Note</th></tr></thead><tbody>${(state.evidenceLog||[]).length ? state.evidenceLog.slice(-8).reverse().map(e=>`<tr><td>${escapeHtml(e.ts)}</td><td>${escapeHtml(e.step)}</td><td>${escapeHtml(e.itemType)}</td><td>${escapeHtml(e.note)}</td></tr>`).join("") : '<tr><td colspan="4">No evidence collected yet.</td></tr>'}</tbody></table></div></div>
+    <div class="card"><h3 style="margin-top:0">Overview of All Titles, Tasks, and Assignments</h3><div class="table-wrap"><table><thead><tr><th>Step</th><th>Task</th><th>Role</th><th>Assigned Person</th></tr></thead><tbody>${allTaskRows().map(r=>`<tr><td>${escapeHtml(r.stepName)}</td><td>${escapeHtml(r.task)}</td><td>${escapeHtml(r.role)}</td><td>${escapeHtml(assignedNameForTask(r.key, r.role) || "Unassigned")}</td></tr>`).join("")}</tbody></table></div></div>
+  </div>`;
 
   byId("prevStepBtn").onclick=()=>{ if(state.currentStepIndex>0){ state.currentStepIndex-=1; renderRun(); } };
   const endBtn = byId("endSimulationBtn");
   if(endBtn){
-    endBtn.onclick=()=>{ state.summaryNotes=""; stopInjectTimer(); renderSummary(); setTab("dashboard"); };
+    endBtn.onclick=()=>{
+      const score = currentScoreSummary();
+      state.readinessTrend.push({date:new Date().toLocaleDateString(), score: score.score});
+      if(score.score >= 80 && !state.badgeState.includes("High Performer")) state.badgeState.push("High Performer");
+      state.summaryNotes="";
+      stopInjectTimer();
+      persistState();
+      renderSummary();
+      setTab("dashboard");
+    };
   }
   const nextBtn = byId("nextStepBtn");
   if(nextBtn){
-    nextBtn.onclick=()=>{ if(state.currentStepIndex<steps.length-1){ state.currentStepIndex+=1; state.revealedInjectCount=Math.max(state.revealedInjectCount,state.currentStepIndex+1); renderRun(); } };
+    nextBtn.onclick=()=>{
+      logAction("Step Advanced", currentStepName, "Exercise Team");
+      if(state.currentStepIndex<steps.length-1){ state.currentStepIndex+=1; state.revealedInjectCount=Math.max(state.revealedInjectCount,state.currentStepIndex+1); renderRun(); }
+    };
   }
   if(byId("revealInjectBtn")) byId("revealInjectBtn").onclick=()=>revealNextInject();
-  if(byId("startInjectBtn")) byId("startInjectBtn").onclick=()=>{ state.injectIntervalMinutes=Number(byId("injectIntervalBox").value||1); startInjectTimer(); byId("startInjectBtn").textContent = "Auto Injects Running"; };
+  if(byId("startInjectBtn")) byId("startInjectBtn").onclick=()=>{ state.injectIntervalMinutes=Number(byId("injectIntervalBox").value||1); startInjectTimer(); byId("startInjectBtn").textContent="Auto Injects Running"; };
   if(byId("stopInjectBtn")) byId("stopInjectBtn").onclick=()=>{ stopInjectTimer(); renderRun(); };
-}
-function saveSimulationSummary(){
-  const record = gatherSimulationRecord();
-  if(record.simulationName){
-    const idx = state.completedSimulations.findIndex(x => x.simulationName===record.simulationName);
-    if(idx >= 0) state.completedSimulations.splice(idx,1);
-  }
-  state.completedSimulations.unshift(record);
-  return record;
-}
-function recordToPdfHtml(record){
-  const teamRows = (record.team || []).map(t=>`<tr><td>${escapeHtml(t.name)}</td><td>${escapeHtml(t.title)}</td><td>${escapeHtml(t.role)}</td><td>${escapeHtml(t.email)}</td><td>${escapeHtml(t.phone)}</td></tr>`).join("");
-  const stepRows = Object.entries(record.stepNotes || {}).map(([key,val])=>`<div class="box"><strong>${escapeHtml(key)}</strong><div style="margin-top:8px"><strong>What they did:</strong><br>${escapeHtml(val.did || "").replaceAll("\n","<br>")}</div><div style="margin-top:8px"><strong>What they found:</strong><br>${escapeHtml(val.found || "").replaceAll("\n","<br>")}</div></div>`).join("");
-  const envList = (record.environmentSystems || []).map(x=>`<li>${escapeHtml(x)}</li>`).join("");
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Simulation Export</title><style>
-body{font-family:Arial,sans-serif;margin:0;background:#f4f7fb;color:#17212f}
-.toolbar{background:#16324f;color:#fff;padding:12px 16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-.toolbar button{padding:10px 14px;border:0;border-radius:8px;cursor:pointer}
-.page{width:8.5in;min-height:11in;margin:18px auto;background:#fff;padding:.6in;box-shadow:0 10px 30px rgba(0,0,0,.12)}
-.box{border:1px solid #cbd7e3;background:#f8fbfd;padding:12px;border-radius:10px;margin-top:16px}
-table{width:100%;border-collapse:collapse;margin-top:8px}
-th,td{border:1px solid #cbd7e3;padding:8px;text-align:left;vertical-align:top}
-th{background:#eef4fa}
-@media print{.toolbar{display:none}.page{margin:0;box-shadow:none;width:auto;min-height:auto}body{background:#fff}}
-</style></head><body><div class="toolbar"><strong>Simulation Export</strong><button onclick="window.print()">Print / Save as PDF</button><button onclick="window.close()">Close</button></div>
-<div class="page">
-<h1 style="margin-top:0">Incident Simulation Export</h1><div class="box"><strong>Simulation Name</strong><div style="margin-top:8px">${escapeHtml(record.simulationName || "Unnamed Simulation")}</div></div>
-<div class="box"><strong>Scenario</strong><div style="margin-top:8px">${escapeHtml(record.scenarioTitle)}</div></div>
-<div class="box"><strong>Saved</strong><div style="margin-top:8px">${escapeHtml(record.savedAtLabel)}</div></div>
-<div class="box"><strong>Tenant / Client</strong><div style="margin-top:8px">${escapeHtml(record.tenant)} / ${escapeHtml(record.client)}</div></div>
-<div class="box"><strong>Meeting</strong><div style="margin-top:8px">${escapeHtml(record.meetingLocation)} · ${escapeHtml(record.meetingTime)}</div></div>
-<div class="box"><strong>Fictitious Environment</strong><ul>${envList || "<li>No environment systems listed.</li>"}</ul></div>
-<div class="box"><strong>Team</strong><table><thead><tr><th>Name</th><th>Title</th><th>Role</th><th>Email</th><th>Phone</th></tr></thead><tbody>${teamRows || '<tr><td colspan="5">No team listed.</td></tr>'}</tbody></table></div>
-<div class="box"><strong>Simulation Summary Notes</strong><div style="margin-top:8px">${escapeHtml(record.summaryNotes || "").replaceAll("\n","<br>") || "No summary notes."}</div></div>
-<div class="box"><strong>Per-Step Notes</strong>${stepRows || "<div style='margin-top:8px'>No step notes captured.</div>"}</div>
-</div></body></html>`;
-}
-function exportSimulationPdf(record){
-  const html = recordToPdfHtml(record);
-  const blob = new Blob([html], {type:"text/html"});
-  const url = URL.createObjectURL(blob);
-  const w = window.open(url,"_blank","noopener,noreferrer");
-  if(!w){
-    const a=document.createElement("a");
-    a.href=url; a.target="_blank"; a.rel="noopener noreferrer";
-    a.click();
-  }
-  setTimeout(()=>URL.revokeObjectURL(url), 60000);
-}
-function openSavedSimulation(simId){
-  const sim = state.completedSimulations.find(x=>x.id===simId);
-  if(!sim) return;
-  const teamRows = (sim.team||[]).map(t=>`<tr><td>${escapeHtml(t.name||"")}</td><td>${escapeHtml(t.title||"")}</td><td>${escapeHtml(t.role||"")}</td><td>${escapeHtml(t.email||"")}</td><td>${escapeHtml(t.phone||"")}</td></tr>`).join("");
-  const stepRows = Object.entries(sim.stepNotes || {}).map(([key,val])=>`<div class="task-card"><div><strong>${escapeHtml(key)}</strong></div><div class="small" style="margin-top:6px"><strong>What they did:</strong><br>${escapeHtml(val.did || "").replaceAll("\n","<br>")}</div><div class="small" style="margin-top:10px"><strong>What they found:</strong><br>${escapeHtml(val.found || "").replaceAll("\n","<br>")}</div></div>`).join("");
-  byId("dashboardTab").innerHTML=`<div class="card"><h2>${escapeHtml(sim.simulationName || sim.scenarioTitle)}</h2>
-    <div class="notice"><strong>Scenario:</strong> ${escapeHtml(sim.scenarioTitle || "")}</div>
-    <div class="notice" style="margin-top:10px"><strong>Saved:</strong> ${escapeHtml(sim.savedAtLabel || sim.savedAt || "")}</div>
-    <div class="notice" style="margin-top:10px"><strong>Meeting:</strong> ${escapeHtml(sim.meetingLocation || "")} · ${escapeHtml(sim.meetingTime || "")}</div>
-    <div class="task-card" style="margin-top:12px"><strong>Summary Notes</strong><div class="small" style="margin-top:8px">${escapeHtml(sim.summaryNotes || "").replaceAll("\n","<br>") || "No summary notes."}</div></div>
-  </div>
-  <div class="card"><h3 style="margin-top:0">Team</h3><div class="table-wrap"><table><thead><tr><th>Name</th><th>Title</th><th>Role</th><th>Email</th><th>Phone</th></tr></thead><tbody>${teamRows || '<tr><td colspan="5">No team saved.</td></tr>'}</tbody></table></div></div>
-  <div class="card"><h3 style="margin-top:0">Per-Step Notes</h3>${stepRows || '<div class="small">No per-step notes saved.</div>'}
-    <div class="row" style="margin-top:12px"><button type="button" class="btn secondary" id="backSavedListBtn">Back</button><button type="button" class="btn primary" id="exportSavedBtn">Export PDF</button></div>
-  </div>`;
-  byId("backSavedListBtn").onclick=()=>{ renderSummary(); setTab("dashboard"); };
-  byId("exportSavedBtn").onclick=()=>exportSimulationPdf(sim);
+  if(byId("saveDecisionBtn")) byId("saveDecisionBtn").onclick=()=>{
+    const decision = byId("decisionTextBox").value.trim();
+    const quality = byId("decisionQualityBox").value;
+    if(!decision){ alert("Enter a decision first."); return; }
+    addDecision(currentStepName, state.roleView==="All Roles" ? "Exercise Team" : state.roleView, decision, quality);
+    persistState();
+    renderRun();
+  };
+  if(byId("collectEvidenceBtn")) byId("collectEvidenceBtn").onclick=()=>{
+    addEvidence(artifacts[0] || "Evidence", `Collected during ${currentStepName}`, currentStepName);
+    persistState();
+    renderRun();
+  };
 }
 function renderSummary(){
   if(!state.user){ return; }
+  const ai = afterActionIntelligence();
   const priorRows = state.completedSimulations.map(sim => `
     <tr>
-      <td><a href="#" onclick="openSavedSimulation(\'${escapeAttr(sim.id)}\'); return false;">${escapeHtml(sim.simulationName || sim.scenarioTitle)}</a></td>
+      <td><a href="#" onclick="openSavedSimulation('${escapeAttr(sim.id)}'); return false;">${escapeHtml(sim.simulationName || sim.scenarioTitle)}</a></td>
       <td>${escapeHtml(sim.savedAtLabel || sim.savedAt || "")}</td>
       <td>${escapeHtml((sim.summaryNotes || "").slice(0,120))}</td>
     </tr>
   `).join("");
-  byId("dashboardTab").innerHTML=`<div class="card"><h2>Simulation Summary & Notes</h2><p class="small">Use this page to capture summary notes after the after-action review. Notes are stored with this simulation in your current browser session for later review.</p>
+  byId("dashboardTab").innerHTML=`<div class="card"><h2>Simulation Summary & Notes</h2><p class="small">Capture summary notes, audit output, and after-action intelligence after the exercise.</p>
   <div class="notice"><strong>Scenario:</strong> ${escapeHtml(currentScenario()?.title || "Unknown")}</div>
   <div style="margin-top:12px"><div class="small">Simulation name</div><input id="simulationNameBox" class="input" placeholder="Name this saved simulation..." value="${escapeAttr(state.currentSimulationName || "")}"></div>
-  <div style="margin-top:12px"><div class="small">Summary notes</div><textarea id="summaryNotesBox" class="textarea" placeholder="Capture key takeaways, major findings, what worked well, what did not, and follow-up actions...">${escapeHtml(state.summaryNotes || "")}</textarea></div>
-  <div class="row" style="margin-top:12px"><button type="button" class="btn primary" id="saveSummaryBtn">Save Simulation Notes</button><button type="button" class="btn secondary" id="exportSummaryBtn">Export PDF</button><button type="button" class="btn secondary" id="backToDashboardBtn">Return to Dashboard</button></div></div>
-  <div class="card"><h3 style="margin-top:0">Saved Simulations In This Session</h3><div class="table-wrap"><table><thead><tr><th>Simulation</th><th>Saved</th><th>Summary Notes</th></tr></thead><tbody>${priorRows || `<tr><td colspan="3">No saved simulations yet.</td></tr>`}</tbody></table></div></div>`;
+  <div style="margin-top:12px"><div class="small">Summary notes</div><textarea id="summaryNotesBox" class="textarea">${escapeHtml(state.summaryNotes || "")}</textarea></div>
+  <div class="row" style="margin-top:12px"><button type="button" class="btn primary" id="saveSummaryBtn">Save Simulation Notes</button><button type="button" class="btn secondary" id="exportSummaryBtn">Export PDF</button><button type="button" class="btn secondary" id="exportAuditBtn">Export Audit JSON</button><button type="button" class="btn secondary" id="backToDashboardBtn">Return to Dashboard</button></div></div>
+  <div class="grid g2">
+    <div class="card"><h3 style="margin-top:0">After Action Intelligence</h3><div class="notice">Score: ${ai.score} — ${escapeHtml(ai.maturity)}</div><div class="small" style="margin-top:10px"><strong>Strengths</strong></div><ul>${ai.strengths.map(x=>`<li>${escapeHtml(x)}</li>`).join("")}</ul><div class="small"><strong>Gaps</strong></div><ul>${ai.gaps.map(x=>`<li>${escapeHtml(x)}</li>`).join("")}</ul><div class="small"><strong>Recommendations</strong></div><ul>${ai.recommendations.map(x=>`<li>${escapeHtml(x)}</li>`).join("")}</ul></div>
+    <div class="card"><h3 style="margin-top:0">Saved Simulations In This Session</h3><div class="table-wrap"><table><thead><tr><th>Simulation</th><th>Saved</th><th>Summary Notes</th></tr></thead><tbody>${priorRows || `<tr><td colspan="3">No saved simulations yet.</td></tr>`}</tbody></table></div></div>
+  </div>`;
   byId("saveSummaryBtn").onclick=()=>{
     state.currentSimulationName = byId("simulationNameBox").value.trim();
     state.summaryNotes = byId("summaryNotesBox").value.trim();
     const record = saveSimulationSummary();
+    persistState();
     alert("Simulation saved.");
     renderSummary();
   };
@@ -919,25 +1158,12 @@ function renderSummary(){
     state.currentSimulationName = byId("simulationNameBox").value.trim();
     state.summaryNotes = byId("summaryNotesBox").value.trim();
     const record = saveSimulationSummary();
+    persistState();
     exportSimulationPdf(record);
   };
+  byId("exportAuditBtn").onclick=()=>exportAuditJson();
   byId("backToDashboardBtn").onclick=()=>{ renderDashboard(); setTab("dashboard"); };
 }
-
-
-function openForm(docName, taskName, assigneeName){
-  const doc=documents.find(d=>d.name===docName); if(!doc) return;
-  const scenario=currentScenario();
-  const html=`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(doc.name)}</title><style>body{font-family:Arial,sans-serif;margin:0;background:#f4f7fb;color:#17212f}.toolbar{background:#16324f;color:#fff;padding:12px 16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}.toolbar button{padding:10px 14px;border:0;border-radius:8px;cursor:pointer}.page{width:8.5in;min-height:11in;margin:18px auto;background:#fff;padding:.6in;box-shadow:0 10px 30px rgba(0,0,0,.12)}.box{border:1px solid #cbd7e3;background:#f8fbfd;padding:12px;border-radius:10px;margin-top:16px}textarea,input{width:100%;padding:10px;border:1px solid #b7c7d8;border-radius:8px;color:#17212f}textarea{min-height:90px}@media print{.toolbar{display:none}.page{margin:0;box-shadow:none;width:auto;min-height:auto}body{background:#fff}}</style></head><body><div class="toolbar"><strong>Fillable Incident Worksheet</strong><button onclick="window.print()">Print / Save as PDF</button><button onclick="window.close()">Close</button></div><div class="page"><h1>${escapeHtml(doc.name)}</h1><div>Purpose: ${escapeHtml(doc.purpose)}</div><div class="box"><strong>Scenario</strong><div style="margin-top:8px">${escapeHtml(scenario?scenario.title:"")}</div></div><div class="box"><strong>Current Task</strong><div style="margin-top:8px">${escapeHtml(taskName)}</div></div><div class="box"><strong>Assigned Person</strong><div style="margin-top:8px">${escapeHtml(assigneeName||"Unassigned")}</div></div><div class="box"><strong>Questions to Answer in Order</strong>${doc.questions.map((q,idx)=>`<div style="margin-top:12px"><label><strong>Question ${idx+1}:</strong> ${escapeHtml(q)}</label><textarea></textarea></div>`).join("")}</div><div class="box"><strong>Additional Notes</strong><textarea style="min-height:140px"></textarea></div></div></body></html>`;
-  const blob=new Blob([html],{type:"text/html"}); const url=URL.createObjectURL(blob); const w=window.open(url,"_blank","noopener,noreferrer");
-  if(!w){
-    const a=document.createElement("a");
-    a.href=url; a.target="_blank"; a.rel="noopener noreferrer";
-    a.click();
-  }
-  setTimeout(()=>URL.revokeObjectURL(url),60000);
-}
-
 function renderDocuments(){
   if(!state.user){
     byId("documentsTab").innerHTML=`<div class="card"><div class="warn">Sign in first.</div></div>`;
@@ -946,7 +1172,47 @@ function renderDocuments(){
   byId("documentsTab").innerHTML=`<div class="card"><h2>Document Repository</h2><div class="stack">${documents.map(doc=>`<div class="task-card"><div><strong>${escapeHtml(doc.name)}</strong></div><div class="small">${escapeHtml(doc.purpose)}</div><button type="button" class="btn secondary" onclick="openForm('${escapeAttr(doc.name)}','General Use','')">Open Form</button></div>`).join("")}</div></div>`;
 }
 
-function renderAll(){ renderDashboard(); renderLibrary(); renderSetup(); renderNotify(); renderRun(); if(typeof renderDocuments==='function') renderDocuments(); }
+
+function renderGovernance(){
+  if(!state.user){ byId("governanceTab").innerHTML=`<div class="card"><div class="warn">Sign in first.</div></div>`; return; }
+  const steps = currentPlaybook()?.steps || [];
+  const ai = afterActionIntelligence();
+  byId("governanceTab").innerHTML=`<div class="card"><h2>Governance, Compliance, and Audit</h2><p class="small">This page summarizes compliance mappings, audit evidence, and remediation planning.</p></div>
+  <div class="grid g2">
+    <div class="card"><h3 style="margin-top:0">Compliance Mapping</h3><div class="table-wrap"><table><thead><tr><th>Step</th><th>NIST</th><th>CMMC</th><th>CIS</th></tr></thead><tbody>${steps.length ? steps.map(st=>{const name=typeof st==="string"?st:(st.name||st.step_name); const m=complianceMap(name); return `<tr><td>${escapeHtml(name)}</td><td>${escapeHtml(m.nist)}</td><td>${escapeHtml(m.cmmc)}</td><td>${escapeHtml(m.cis)}</td></tr>`;}).join("") : '<tr><td colspan="4">No playbook loaded.</td></tr>'}</tbody></table></div></div>
+    <div class="card"><h3 style="margin-top:0">Audit Trail</h3><div class="table-wrap"><table><thead><tr><th>Time</th><th>Action</th><th>Detail</th><th>Actor</th></tr></thead><tbody>${(state.actionLog||[]).length ? state.actionLog.slice().reverse().map(x=>`<tr><td>${escapeHtml(x.ts)}</td><td>${escapeHtml(x.action)}</td><td>${escapeHtml(x.detail)}</td><td>${escapeHtml(x.actor)}</td></tr>`).join("") : '<tr><td colspan="4">No audit entries yet.</td></tr>'}</tbody></table></div></div>
+  </div>
+  <div class="grid g2">
+    <div class="card"><h3 style="margin-top:0">After Action Intelligence</h3><div class="notice">Score: ${ai.score} — ${escapeHtml(ai.maturity)}</div><div class="small" style="margin-top:10px"><strong>Strengths</strong></div><ul>${ai.strengths.map(x=>`<li>${escapeHtml(x)}</li>`).join("")}</ul><div class="small"><strong>Gaps</strong></div><ul>${ai.gaps.map(x=>`<li>${escapeHtml(x)}</li>`).join("")}</ul><div class="small"><strong>Recommendations</strong></div><ul>${ai.recommendations.map(x=>`<li>${escapeHtml(x)}</li>`).join("")}</ul></div>
+    <div class="card"><h3 style="margin-top:0">Security Hardening Notes</h3><div class="warn">This front-end now supports stronger reporting and control surfaces, but backend controls are still required for RBAC, tamper-proof logging, true MFA, secure storage, and tenant isolation.</div></div>
+  </div>`;
+}
+function renderBuilder(){
+  if(!state.user){ byId("builderTab").innerHTML=`<div class="card"><div class="warn">Sign in first.</div></div>`; return; }
+  byId("builderTab").innerHTML=`<div class="card"><h2>Scenario Builder</h2><p class="small">Create a reusable custom scenario and matching playbook shell in this browser session.</p>
+  <div class="grid g2">
+    <div><div class="small">Scenario title</div><input id="builderScenarioTitle" class="input" placeholder="Example: Cloud storage token theft"></div>
+    <div><div class="small">Incident type</div><input id="builderIncidentType" class="input" placeholder="Example: Data exfiltration"></div>
+  </div>
+  <div style="margin-top:10px"><div class="small">Starting situation</div><textarea id="builderStart" class="textarea"></textarea></div>
+  <div class="grid g3" style="margin-top:10px">
+    <div><div class="small">Inject 1</div><input id="builderInject1" class="input"></div>
+    <div><div class="small">Inject 2</div><input id="builderInject2" class="input"></div>
+    <div><div class="small">Inject 3</div><input id="builderInject3" class="input"></div>
+  </div>
+  <div class="row" style="margin-top:12px"><button type="button" class="btn primary" id="saveBuilderBtn">Save Custom Scenario</button></div></div>
+  <div class="card"><h3 style="margin-top:0">Custom Scenarios</h3><div class="table-wrap"><table><thead><tr><th>Title</th><th>Type</th></tr></thead><tbody>${(state.customScenarios||[]).length ? state.customScenarios.map(s=>`<tr><td>${escapeHtml(s.title||"")}</td><td>${escapeHtml(s.incidentType||"")}</td></tr>`).join("") : '<tr><td colspan="2">No custom scenarios yet.</td></tr>'}</tbody></table></div></div>`;
+  byId("saveBuilderBtn").onclick=()=>saveCustomScenario();
+}
+function renderHistory(){
+  if(!state.user){ byId("historyTab").innerHTML=`<div class="card"><div class="warn">Sign in first.</div></div>`; return; }
+  byId("historyTab").innerHTML=`<div class="card"><h2>History & Persistence</h2><p class="small">This view shows saved simulations, trend history, and badge progress stored in this browser session/local storage.</p></div>
+  <div class="grid g2">
+    <div class="card"><h3 style="margin-top:0">Saved Simulations</h3><div class="table-wrap"><table><thead><tr><th>Name</th><th>Saved</th></tr></thead><tbody>${(state.completedSimulations||[]).length ? state.completedSimulations.map(sim=>`<tr><td><a href="#" onclick="openSavedSimulation('${escapeAttr(sim.id)}'); return false;">${escapeHtml(sim.simulationName || sim.scenarioTitle || "")}</a></td><td>${escapeHtml(sim.savedAtLabel || sim.savedAt || "")}</td></tr>`).join("") : '<tr><td colspan="2">No saved simulations yet.</td></tr>'}</tbody></table></div></div>
+    <div class="card"><h3 style="margin-top:0">Readiness Trend</h3><div class="small">${(state.readinessTrend||[]).length ? state.readinessTrend.map(x=>`${x.date}: ${x.score}`).join(" | ") : "No trend entries yet."}</div><div class="small" style="margin-top:10px">Badges: ${(state.badgeState||[]).length ? state.badgeState.join(", ") : "None yet."}</div></div>
+  </div>`;
+}
+function renderAll(){ renderDashboard(); renderLibrary(); renderSetup(); renderNotify(); renderRun(); if(typeof renderDocuments==='function') renderDocuments(); renderGovernance(); renderBuilder(); renderHistory(); }
 async function init(){
   const [sResp,pResp,tResp]=await Promise.all([fetch("scenarios.json"), fetch("playbooks.json"), fetch("tenants.json")]);
   const sJson=await sResp.json(); const pJson=await pResp.json(); const tJson=await tResp.json();

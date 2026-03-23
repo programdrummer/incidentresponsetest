@@ -1,0 +1,15 @@
+{
+  "static_checks": {
+    "missing_onclick_handlers": [
+      "openForm",
+      "openSavedSimulation"
+    ],
+    "has_renderDocuments": true,
+    "has_openForm": false,
+    "has_openGeneratedArtifact": true,
+    "has_openStepNotes": true,
+    "has_renderGovernance": true,
+    "has_renderBuilder": true,
+    "has_renderHistory": true
+  }
+}

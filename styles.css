@@ -287,3 +287,5 @@ tr:hover td{
   #app{grid-template-columns:1fr}
   .sidebar{position:relative}
 }
+
+label.small input[type="checkbox"]{margin-right:6px}
