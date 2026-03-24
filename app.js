@@ -30,7 +30,9 @@ const documents=[
 {name:"Communications Log",purpose:"Track internal and external communications.",questions:["Who needs to know now?","What should leadership hear?"]},
 {name:"Containment Checklist",purpose:"Track containment actions.",questions:["What reduces risk fastest?","What might break if this action is taken?"]},
 {name:"Recovery Checklist",purpose:"Track restoration and validation.",questions:["What has been restored?","What still needs validation?"]},
-{name:"After-Action Review",purpose:"Capture lessons learned.",questions:["What worked?","What did not?","What should change?"]}
+{name:"After-Action Review",purpose:"Capture the formal after action review.",questions:["What happened during the simulation?","What actions were taken in sequence?","What decisions had the biggest impact?","What worked well?","What did not work well?","What should change before the next exercise?"]},
+{name:"Lessons Learned Summary",purpose:"Document lessons learned for future exercises and incidents.",questions:["What are the top lessons learned?","What control gaps were identified?","What training gaps were identified?","What process changes are recommended?"]},
+{name:"Improvement Plan",purpose:"Create a concrete improvement plan with owners and dates.",questions:["What improvement is needed?","Who owns the improvement?","What is the target completion date?","How will completion be validated?"]}
 ];
 
 const hardwareCatalog=["Firewall","Domain Controller","File Server","Backup Appliance","User Workstations","Laptops","VPN Gateway","Core Switch","Wireless Access Points","Database Server"];
@@ -415,6 +417,15 @@ function slaWarning(stepName){
 function setTab(tab){
   if(tab !== "login" && !state.user){ alert("Sign in first."); return; }
   state.tab = tab;
+  if(tab === "dashboard" && typeof renderDashboard === "function") renderDashboard();
+  if(tab === "library" && typeof renderLibrary === "function") renderLibrary();
+  if(tab === "setup" && typeof renderSetup === "function") renderSetup();
+  if(tab === "notify" && typeof renderNotify === "function") renderNotify();
+  if(tab === "run" && typeof renderRun === "function") renderRun();
+  if(tab === "documents" && typeof renderDocuments === "function") renderDocuments();
+  if(tab === "governance" && typeof renderGovernance === "function") renderGovernance();
+  if(tab === "builder" && typeof renderBuilder === "function") renderBuilder();
+  if(tab === "history" && typeof renderHistory === "function") renderHistory();
   document.querySelectorAll(".tab").forEach(el=>el.classList.remove("active"));
   document.querySelectorAll(".nav-btn[data-tab]").forEach(el=>el.classList.remove("active"));
   const tabEl = byId(tab + "Tab");
@@ -467,18 +478,8 @@ function verifyMfa(){
   if(byId("userBadge")) byId("userBadge").textContent = `Signed in: ${state.user}`;
   if(byId("tenantBadge")) byId("tenantBadge").textContent = `${tenantDisplayName()} / ${clientDisplayName()}`;
   if(!state.environmentSystems || !state.environmentSystems.length) state.environmentSystems = suggestedSystemsForScenario();
-  renderDashboard();
-  renderLibrary();
-  renderSetup();
-  renderNotify();
-  renderRun();
-  if(typeof renderDocuments === 'function') renderDocuments();
-  document.querySelectorAll(".tab").forEach(el=>el.classList.remove("active"));
-  document.querySelectorAll(".nav-btn[data-tab]").forEach(el=>el.classList.remove("active"));
-  if(byId("dashboardTab")) byId("dashboardTab").classList.add("active");
-  const dashBtn = document.querySelector('.nav-btn[data-tab="dashboard"]');
-  if(dashBtn) dashBtn.classList.add("active");
-  state.tab = "dashboard";
+  renderAll();
+  setTab("dashboard");
 }
 function renderDashboard(){
   if(!state.user){ byId("dashboardTab").innerHTML=`<div class="card"><div class="warn">Sign in first.</div></div>`; return; }
@@ -1164,6 +1165,45 @@ function renderSummary(){
   byId("exportAuditBtn").onclick=()=>exportAuditJson();
   byId("backToDashboardBtn").onclick=()=>{ renderDashboard(); setTab("dashboard"); };
 }
+
+function openForm(docName, taskName, assigneeName){
+  const doc = documents.find(d=>d.name===docName);
+  if(!doc) return alert("Document not found.");
+  const scenario = currentScenario();
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(doc.name)}</title><style>
+  body{font-family:Arial,sans-serif;margin:0;background:#f4f7fb;color:#17212f}
+  .toolbar{background:#16324f;color:#fff;padding:12px 16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .toolbar button{padding:10px 14px;border:0;border-radius:8px;cursor:pointer}
+  .page{width:8.5in;min-height:11in;margin:18px auto;background:#fff;padding:.6in;box-shadow:0 10px 30px rgba(0,0,0,.12)}
+  .box{border:1px solid #cbd7e3;background:#f8fbfd;padding:12px;border-radius:10px;margin-top:16px}
+  textarea,input{width:100%;padding:10px;border:1px solid #b7c7d8;border-radius:8px;color:#17212f;box-sizing:border-box}
+  textarea{min-height:110px}
+  @media print{.toolbar{display:none}.page{margin:0;box-shadow:none;width:auto;min-height:auto}body{background:#fff}}
+  </style></head><body><div class="toolbar"><strong>Fillable Incident Worksheet</strong><button onclick="window.print()">Print / Save as PDF</button><button onclick="window.close()">Close</button></div><div class="page">
+  <h1 style="margin-top:0">${escapeHtml(doc.name)}</h1>
+  <div class="box"><strong>Scenario</strong><div style="margin-top:8px">${escapeHtml(scenario ? scenario.title : "")}</div></div>
+  <div class="box"><strong>Current Task</strong><div style="margin-top:8px">${escapeHtml(taskName || "General Use")}</div></div>
+  <div class="box"><strong>Assigned Person</strong><div style="margin-top:8px">${escapeHtml(assigneeName || "Unassigned")}</div></div>
+  <div class="box"><strong>Purpose</strong><div style="margin-top:8px">${escapeHtml(doc.purpose)}</div></div>
+  <div class="box"><strong>Questions to Answer</strong>
+    ${doc.questions.map((q,idx)=>`<div style="margin-top:12px"><label><strong>Question ${idx+1}:</strong> ${escapeHtml(q)}</label><textarea></textarea></div>`).join("")}
+  </div>
+  <div class="box"><strong>Additional Notes</strong><textarea style="min-height:160px"></textarea></div>
+  </div></body></html>`;
+  const blob = new Blob([html], {type:"text/html"});
+  const url = URL.createObjectURL(blob);
+  const w = window.open(url, "_blank", "noopener,noreferrer");
+  if(!w){
+    const a = document.createElement("a");
+    a.href = url;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    a.click();
+  }
+  setTimeout(()=>URL.revokeObjectURL(url), 60000);
+}
+
+
 function renderDocuments(){
   if(!state.user){
     byId("documentsTab").innerHTML=`<div class="card"><div class="warn">Sign in first.</div></div>`;
@@ -1216,7 +1256,12 @@ function renderAll(){ renderDashboard(); renderLibrary(); renderSetup(); renderN
 async function init(){
   const [sResp,pResp,tResp]=await Promise.all([fetch("scenarios.json"), fetch("playbooks.json"), fetch("tenants.json")]);
   const sJson=await sResp.json(); const pJson=await pResp.json(); const tJson=await tResp.json();
-  scenarios=sJson.scenarios||[]; playbooks=pJson.playbooks||[]; tenants=tJson.tenants||[];
+  scenarios=sJson.scenarios||[];
+  playbooks=pJson.playbooks||[];
+  tenants=tJson.tenants||[];
+  if(typeof loadPersistedState === "function") loadPersistedState();
+  if((state.customScenarios||[]).length) scenarios = scenarios.concat(state.customScenarios);
+  if((state.customPlaybooks||[]).length) playbooks = playbooks.concat(state.customPlaybooks);
   state.selectedScenarioId=scenarios[0]?.id||null;
   state.selectedTenantId=tenants[0]?.id||"";
   state.selectedClientId=tenants[0]?.clients?.[0]?.id||"";
@@ -1224,12 +1269,7 @@ async function init(){
   byId("resetBtn").onclick=()=>location.reload();
   const logoutBtn = byId("logoutBtn"); if(logoutBtn) logoutBtn.onclick=()=>logOff();
   renderLogin();
-  renderDashboard();
-  renderLibrary();
-  renderSetup();
-  renderNotify();
-  renderRun();
-  if(typeof renderDocuments==='function') renderDocuments();
+  renderAll();
   setTab("login");
 }
 init().catch(err=>{ document.body.innerHTML=`<pre style="padding:20px;color:#17212f;background:#f4f7fb">App failed to load.\n\n${escapeHtml(err.stack||err.message||String(err))}</pre>`; });

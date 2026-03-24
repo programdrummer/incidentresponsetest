@@ -1,0 +1,9 @@
+{
+  "fixed": [
+    "Governance tab now renders on fresh sessions and after MFA login",
+    "Forms navigation now uses a restored working openForm helper",
+    "After-Action Review, Lessons Learned Summary, and Improvement Plan now open as real fillable forms",
+    "Cache-busting query added to app.js and styles.css to reduce stale shared deployments"
+  ],
+  "scope": "Only broken tab/form behaviors and their direct dependencies were changed."
+}
