@@ -1,4 +1,6 @@
 let scenarios=[]; let playbooks=[]; let tenants=[];
+const PERSIST_KEY = "incidentSimulatorStateV7";
+const FORM_PERSIST_PREFIX = "incidentSimulatorFormDraftV7";
 const state={
   user:null,pendingEmail:"",tab:"login",selectedScenarioId:null,currentStepIndex:0,
   selectedTenantId:"msp-demo",selectedClientId:"client-1",customTenantName:"", environmentMode:"fictitious", currentSimulationName:"",
@@ -10,6 +12,15 @@ const state={
   notificationsSent:false,
   search:"",
   completedSimulations:[],
+  currentSimulationId:null,
+  customScenarios:[],
+  customPlaybooks:[],
+  readinessTrend:[],
+  whiteLabelName:"",
+  badgeState:[],
+  actionLog:[],
+  evidenceLog:[],
+  decisionLog:[],
   summaryNotes:"",
   environmentSystems:[],
   stepNotes:{},
@@ -19,7 +30,11 @@ const state={
   revealedInjectCount:1,
   injectAutoRun:false,
   injectIntervalMinutes:1,
-  injectTimer:null
+  injectTimer:null,
+  exerciseMode:"Training",
+  roleView:"All Roles",
+  simulatedNotifications:true,
+  summaryViewActive:false
 };
 
 const availableRoles=["Incident Commander","Technical Lead","Security Analyst","Help Desk Lead","IT Operations","Backup / Recovery Lead","Communications Lead","Executive Sponsor"];
@@ -30,8 +45,8 @@ const documents=[
 {name:"Communications Log",purpose:"Track internal and external communications.",questions:["Who needs to know now?","What should leadership hear?"]},
 {name:"Containment Checklist",purpose:"Track containment actions.",questions:["What reduces risk fastest?","What might break if this action is taken?"]},
 {name:"Recovery Checklist",purpose:"Track restoration and validation.",questions:["What has been restored?","What still needs validation?"]},
-{name:"After-Action Review",purpose:"Capture the formal after action review.",questions:["What happened during the simulation?","What actions were taken in sequence?","What decisions had the biggest impact?","What worked well?","What did not work well?","What should change before the next exercise?"]},
-{name:"Lessons Learned Summary",purpose:"Document lessons learned for future exercises and incidents.",questions:["What are the top lessons learned?","What control gaps were identified?","What training gaps were identified?","What process changes are recommended?"]},
+{name:"After-Action Review",aliases:["After Action Review","After Action Report"],purpose:"Capture the formal after action review.",questions:["What happened during the simulation?","What actions were taken in sequence?","What decisions had the biggest impact?","What worked well?","What did not work well?","What should change before the next exercise?"]},
+{name:"Lessons Learned Summary",aliases:["Lessons Learned"],purpose:"Document lessons learned for future exercises and incidents.",questions:["What are the top lessons learned?","What control gaps were identified?","What training gaps were identified?","What process changes are recommended?"]},
 {name:"Improvement Plan",purpose:"Create a concrete improvement plan with owners and dates.",questions:["What improvement is needed?","Who owns the improvement?","What is the target completion date?","How will completion be validated?"]}
 ];
 
@@ -97,10 +112,12 @@ function buildStepTasks(step){
   if(name.includes("contain")) return [{task:"Choose the fastest safe containment action", role:"IT Operations"},{task:"Communicate the containment decision", role:"Communications Lead"}];
   if(name.includes("investigat")) return [{task:"Collect logs and artifacts", role:"Security Analyst"},{task:"Establish the most likely root cause", role:"Incident Commander"}];
   if(name.includes("recover")) return [{task:"Restore systems or accounts", role:"IT Operations"},{task:"Validate systems are ready for business use", role:"Technical Lead"}];
+  if(name.includes("after action")) return [{task:"Complete the after action report", role:"Incident Commander"},{task:"Capture lessons learned", role:"Communications Lead"},{task:"Create the improvement plan", role:"Technical Lead"}];
   return [{task:(typeof step==="string"?step:(step.name||"Complete the assigned activity")), role:"Incident Commander"}];
 }
 function docsForTask(task){
   const t=task.toLowerCase();
+  if(t.includes("after action")||t.includes("lesson")||t.includes("improvement")) return ["After-Action Review","Lessons Learned Summary","Improvement Plan"];
   if(t.includes("alert")||t.includes("detect")||t.includes("triage")) return ["Incident Log","Evidence Log"];
   if(t.includes("contain")) return ["Containment Checklist","Incident Log","Communications Log"];
   if(t.includes("recover")) return ["Recovery Checklist","Incident Log"];
@@ -216,14 +233,15 @@ function persistState(){
       customPlaybooks: state.customPlaybooks || [],
       readinessTrend: state.readinessTrend || [],
       whiteLabelName: state.whiteLabelName || "",
-      badgeState: state.badgeState || []
+      badgeState: state.badgeState || [],
+      currentSimulationId: state.currentSimulationId || null
     };
-    localStorage.setItem("incidentSimulatorStateV7", JSON.stringify(keep));
+    localStorage.setItem(PERSIST_KEY, JSON.stringify(keep));
   }catch(e){}
 }
 function loadPersistedState(){
   try{
-    const raw = localStorage.getItem("incidentSimulatorStateV7");
+    const raw = localStorage.getItem(PERSIST_KEY);
     if(!raw) return;
     const keep = JSON.parse(raw);
     state.completedSimulations = keep.completedSimulations || [];
@@ -232,7 +250,24 @@ function loadPersistedState(){
     state.readinessTrend = keep.readinessTrend || [];
     state.whiteLabelName = keep.whiteLabelName || "";
     state.badgeState = keep.badgeState || [];
+    state.currentSimulationId = keep.currentSimulationId || null;
   }catch(e){}
+}
+function resolveDocument(docName){
+  return documents.find(d=>d.name===docName || (d.aliases||[]).includes(docName));
+}
+function formDraftKey(docName){
+  const doc = resolveDocument(docName) || {name: docName || "Document"};
+  const scenarioId = currentScenario()?.id || "general";
+  return `${FORM_PERSIST_PREFIX}:${scenarioId}:${doc.name}`;
+}
+function loadFormDraft(docName){
+  try{
+    const raw = localStorage.getItem(formDraftKey(docName));
+    return raw ? JSON.parse(raw) : {};
+  }catch(e){
+    return {};
+  }
 }
 function logAction(action, detail="", actor="System"){
   state.actionLog = state.actionLog || [];
@@ -415,9 +450,14 @@ function slaWarning(stepName){
   return "";
 }
 function setTab(tab){
-  if(tab !== "login" && !state.user){ alert("Sign in first."); return; }
+  const publicTabs = new Set(["login","governance"]);
+  if(!publicTabs.has(tab) && !state.user){ alert("Sign in first."); return; }
+  if(tab !== "dashboard") state.summaryViewActive = false;
   state.tab = tab;
-  if(tab === "dashboard" && typeof renderDashboard === "function") renderDashboard();
+  if(tab === "dashboard"){
+    if(state.summaryViewActive && typeof renderSummary === "function") renderSummary();
+    else if(typeof renderDashboard === "function") renderDashboard();
+  }
   if(tab === "library" && typeof renderLibrary === "function") renderLibrary();
   if(tab === "setup" && typeof renderSetup === "function") renderSetup();
   if(tab === "notify" && typeof renderNotify === "function") renderNotify();
@@ -585,6 +625,10 @@ function selectScenario(id){
   state.selectedScenarioId = id;
   state.currentStepIndex = 0;
   state.revealedInjectCount = 1;
+  state.currentSimulationId = null;
+  state.currentSimulationName = "";
+  state.summaryNotes = "";
+  state.summaryViewActive = false;
   if(typeof stopInjectTimer === "function") stopInjectTimer();
   state.environmentSystems = suggestedSystemsForScenario();
   state.roleAssignments = {};
@@ -724,6 +768,19 @@ function notificationRows(){
   return Object.values(byMember);
 }
 
+function syncMeetingTimestamp(){
+  const datePart = String(state.meetingDate || "").trim();
+  const timePart = String(state.meetingTimeOnly || "").trim();
+  if(datePart && timePart){
+    state.meetingTime = `${datePart} ${timePart}`;
+    return;
+  }
+  if(datePart){
+    state.meetingTime = datePart;
+    return;
+  }
+  state.meetingTime = timePart || "Not set";
+}
 
 
 
@@ -1098,9 +1155,9 @@ function renderRun(){
       state.readinessTrend.push({date:new Date().toLocaleDateString(), score: score.score});
       if(score.score >= 80 && !state.badgeState.includes("High Performer")) state.badgeState.push("High Performer");
       state.summaryNotes="";
+      state.summaryViewActive = true;
       stopInjectTimer();
       persistState();
-      renderSummary();
       setTab("dashboard");
     };
   }
@@ -1130,6 +1187,7 @@ function renderRun(){
 }
 function renderSummary(){
   if(!state.user){ return; }
+  state.summaryViewActive = true;
   const ai = afterActionIntelligence();
   const priorRows = state.completedSimulations.map(sim => `
     <tr>
@@ -1163,13 +1221,85 @@ function renderSummary(){
     exportSimulationPdf(record);
   };
   byId("exportAuditBtn").onclick=()=>exportAuditJson();
-  byId("backToDashboardBtn").onclick=()=>{ renderDashboard(); setTab("dashboard"); };
+  byId("backToDashboardBtn").onclick=()=>{ state.summaryViewActive = false; renderDashboard(); setTab("dashboard"); };
 }
 
+function saveSimulationSummary(){
+  const now = new Date();
+  const recordId = state.currentSimulationId || `sim-${now.getTime()}`;
+  const record = {
+    id: recordId,
+    selectedScenarioId: state.selectedScenarioId,
+    scenarioTitle: currentScenario()?.title || "",
+    simulationName: state.currentSimulationName || currentScenario()?.title || "Simulation",
+    summaryNotes: state.summaryNotes || "",
+    savedAt: now.toISOString(),
+    savedAtLabel: now.toLocaleString(),
+    meetingLocation: state.meetingLocation || "",
+    meetingTime: state.meetingTime || "",
+    team: JSON.parse(JSON.stringify(state.team || [])),
+    environmentSystems: JSON.parse(JSON.stringify(state.environmentSystems || [])),
+    stepNotes: JSON.parse(JSON.stringify(state.stepNotes || {})),
+    evidenceLog: JSON.parse(JSON.stringify(state.evidenceLog || [])),
+    decisionLog: JSON.parse(JSON.stringify(state.decisionLog || [])),
+    actionLog: JSON.parse(JSON.stringify(state.actionLog || []))
+  };
+  const idx = (state.completedSimulations || []).findIndex(sim=>sim.id===recordId);
+  if(idx >= 0) state.completedSimulations[idx] = record;
+  else state.completedSimulations.unshift(record);
+  state.currentSimulationId = recordId;
+  return record;
+}
+function exportSimulationPdf(record){
+  const sim = record || saveSimulationSummary();
+  const noteRows = Object.entries(sim.stepNotes || {});
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Simulation Summary</title><style>
+  body{font-family:Arial,sans-serif;margin:0;background:#f4f7fb;color:#17212f}
+  .toolbar{background:#16324f;color:#fff;padding:12px 16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .toolbar button{padding:10px 14px;border:0;border-radius:8px;cursor:pointer}
+  .page{width:8.5in;min-height:11in;margin:18px auto;background:#fff;padding:.6in;box-shadow:0 10px 30px rgba(0,0,0,.12)}
+  .box{border:1px solid #cbd7e3;background:#f8fbfd;padding:12px;border-radius:10px;margin-top:16px}
+  ul{margin:10px 0 0 18px}
+  @media print{.toolbar{display:none}.page{margin:0;box-shadow:none;width:auto;min-height:auto}body{background:#fff}}
+  </style></head><body><div class="toolbar"><strong>Simulation Summary</strong><button onclick="window.print()">Print / Save as PDF</button><button onclick="window.close()">Close</button></div><div class="page">
+  <h1 style="margin-top:0">${escapeHtml(sim.simulationName || sim.scenarioTitle || "Simulation Summary")}</h1>
+  <div class="box"><strong>Scenario</strong><div style="margin-top:8px">${escapeHtml(sim.scenarioTitle || "")}</div></div>
+  <div class="box"><strong>Saved</strong><div style="margin-top:8px">${escapeHtml(sim.savedAtLabel || sim.savedAt || "")}</div></div>
+  <div class="box"><strong>Meeting</strong><div style="margin-top:8px">${escapeHtml(sim.meetingLocation || "Not set")} · ${escapeHtml(sim.meetingTime || "Not set")}</div></div>
+  <div class="box"><strong>Team</strong><ul>${(sim.team||[]).length ? sim.team.map(member=>`<li>${escapeHtml(`${member.firstName || ""} ${member.lastName || ""}`.trim())}${member.role ? ` — ${escapeHtml(member.role)}` : ""}</li>`).join("") : "<li>No team members saved.</li>"}</ul></div>
+  <div class="box"><strong>Environment Systems</strong><ul>${(sim.environmentSystems||[]).length ? sim.environmentSystems.map(item=>`<li>${escapeHtml(item)}</li>`).join("") : "<li>No environment systems saved.</li>"}</ul></div>
+  <div class="box"><strong>Summary Notes</strong><div style="margin-top:8px;white-space:pre-wrap">${escapeHtml(sim.summaryNotes || "No summary notes saved.")}</div></div>
+  <div class="box"><strong>Step Notes</strong>${noteRows.length ? noteRows.map(([stepKey,note])=>`<div style="margin-top:12px"><strong>${escapeHtml(stepKey)}</strong><div style="margin-top:6px"><em>Did</em>: ${escapeHtml(note.did || "") || "None recorded."}</div><div style="margin-top:6px"><em>Found</em>: ${escapeHtml(note.found || "") || "None recorded."}</div></div>`).join("") : "<div style=\"margin-top:8px\">No step notes saved.</div>"}</div>
+  </div></body></html>`;
+  const blob = new Blob([html], {type:"text/html"});
+  const url = URL.createObjectURL(blob);
+  const w = window.open(url, "_blank", "noopener,noreferrer");
+  if(!w){ const a=document.createElement("a"); a.href=url; a.target="_blank"; a.rel="noopener noreferrer"; a.click(); }
+  setTimeout(()=>URL.revokeObjectURL(url), 60000);
+}
+function openSavedSimulation(id){
+  const record = (state.completedSimulations || []).find(sim=>sim.id===id);
+  if(!record) return alert("Saved simulation not found.");
+  state.currentSimulationId = record.id;
+  state.selectedScenarioId = record.selectedScenarioId || state.selectedScenarioId;
+  state.currentSimulationName = record.simulationName || "";
+  state.summaryNotes = record.summaryNotes || "";
+  state.team = JSON.parse(JSON.stringify(record.team || []));
+  state.environmentSystems = JSON.parse(JSON.stringify(record.environmentSystems || []));
+  state.stepNotes = JSON.parse(JSON.stringify(record.stepNotes || {}));
+  state.evidenceLog = JSON.parse(JSON.stringify(record.evidenceLog || []));
+  state.decisionLog = JSON.parse(JSON.stringify(record.decisionLog || []));
+  state.actionLog = JSON.parse(JSON.stringify(record.actionLog || []));
+  state.summaryViewActive = true;
+  setTab("dashboard");
+}
 function openForm(docName, taskName, assigneeName){
-  const doc = documents.find(d=>d.name===docName);
+  const doc = resolveDocument(docName);
   if(!doc) return alert("Document not found.");
   const scenario = currentScenario();
+  const draft = loadFormDraft(doc.name);
+  const answers = Array.isArray(draft.answers) ? draft.answers : [];
+  const storageKey = formDraftKey(doc.name);
   const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(doc.name)}</title><style>
   body{font-family:Arial,sans-serif;margin:0;background:#f4f7fb;color:#17212f}
   .toolbar{background:#16324f;color:#fff;padding:12px 16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
@@ -1178,18 +1308,39 @@ function openForm(docName, taskName, assigneeName){
   .box{border:1px solid #cbd7e3;background:#f8fbfd;padding:12px;border-radius:10px;margin-top:16px}
   textarea,input{width:100%;padding:10px;border:1px solid #b7c7d8;border-radius:8px;color:#17212f;box-sizing:border-box}
   textarea{min-height:110px}
+  .status{font-size:12px;color:#d8e6f3}
   @media print{.toolbar{display:none}.page{margin:0;box-shadow:none;width:auto;min-height:auto}body{background:#fff}}
-  </style></head><body><div class="toolbar"><strong>Fillable Incident Worksheet</strong><button onclick="window.print()">Print / Save as PDF</button><button onclick="window.close()">Close</button></div><div class="page">
+  </style></head><body><div class="toolbar"><strong>Fillable Incident Worksheet</strong><button id="saveDraftBtn">Save Draft</button><button onclick="window.print()">Print / Save as PDF</button><button onclick="window.close()">Close</button><span id="saveStatus" class="status">Local draft ready</span></div><div class="page">
   <h1 style="margin-top:0">${escapeHtml(doc.name)}</h1>
   <div class="box"><strong>Scenario</strong><div style="margin-top:8px">${escapeHtml(scenario ? scenario.title : "")}</div></div>
   <div class="box"><strong>Current Task</strong><div style="margin-top:8px">${escapeHtml(taskName || "General Use")}</div></div>
   <div class="box"><strong>Assigned Person</strong><div style="margin-top:8px">${escapeHtml(assigneeName || "Unassigned")}</div></div>
   <div class="box"><strong>Purpose</strong><div style="margin-top:8px">${escapeHtml(doc.purpose)}</div></div>
   <div class="box"><strong>Questions to Answer</strong>
-    ${doc.questions.map((q,idx)=>`<div style="margin-top:12px"><label><strong>Question ${idx+1}:</strong> ${escapeHtml(q)}</label><textarea></textarea></div>`).join("")}
+    ${doc.questions.map((q,idx)=>`<div style="margin-top:12px"><label><strong>Question ${idx+1}:</strong> ${escapeHtml(q)}</label><textarea data-answer="${idx}">${escapeHtml(answers[idx] || "")}</textarea></div>`).join("")}
   </div>
-  <div class="box"><strong>Additional Notes</strong><textarea style="min-height:160px"></textarea></div>
-  </div></body></html>`;
+  <div class="box"><strong>Additional Notes</strong><textarea id="additionalNotes" style="min-height:160px">${escapeHtml(draft.additionalNotes || "")}</textarea></div>
+  </div><script>
+  const storageKey = ${JSON.stringify(storageKey)};
+  const statusEl = document.getElementById("saveStatus");
+  function collectDraft(){
+    return {
+      answers: Array.from(document.querySelectorAll("[data-answer]")).map(el=>el.value),
+      additionalNotes: document.getElementById("additionalNotes").value,
+      savedAt: new Date().toISOString()
+    };
+  }
+  function saveDraft(){
+    try{
+      localStorage.setItem(storageKey, JSON.stringify(collectDraft()));
+      statusEl.textContent = "Saved locally";
+    }catch(err){
+      statusEl.textContent = "Local save unavailable";
+    }
+  }
+  document.getElementById("saveDraftBtn").addEventListener("click", saveDraft);
+  document.querySelectorAll("textarea").forEach(el=>el.addEventListener("input", saveDraft));
+  </script></body></html>`;
   const blob = new Blob([html], {type:"text/html"});
   const url = URL.createObjectURL(blob);
   const w = window.open(url, "_blank", "noopener,noreferrer");
@@ -1214,10 +1365,9 @@ function renderDocuments(){
 
 
 function renderGovernance(){
-  if(!state.user){ byId("governanceTab").innerHTML=`<div class="card"><div class="warn">Sign in first.</div></div>`; return; }
   const steps = currentPlaybook()?.steps || [];
   const ai = afterActionIntelligence();
-  byId("governanceTab").innerHTML=`<div class="card"><h2>Governance, Compliance, and Audit</h2><p class="small">This page summarizes compliance mappings, audit evidence, and remediation planning.</p></div>
+  byId("governanceTab").innerHTML=`<div class="card"><h2>Governance, Compliance, and Audit</h2><p class="small">This page summarizes compliance mappings, audit evidence, and remediation planning.</p>${!state.user ? `<div class="notice" style="margin-top:10px">Public preview mode is available here for fresh users. Sign in to run simulations, save records, and capture team activity.</div>` : ""}</div>
   <div class="grid g2">
     <div class="card"><h3 style="margin-top:0">Compliance Mapping</h3><div class="table-wrap"><table><thead><tr><th>Step</th><th>NIST</th><th>CMMC</th><th>CIS</th></tr></thead><tbody>${steps.length ? steps.map(st=>{const name=typeof st==="string"?st:(st.name||st.step_name); const m=complianceMap(name); return `<tr><td>${escapeHtml(name)}</td><td>${escapeHtml(m.nist)}</td><td>${escapeHtml(m.cmmc)}</td><td>${escapeHtml(m.cis)}</td></tr>`;}).join("") : '<tr><td colspan="4">No playbook loaded.</td></tr>'}</tbody></table></div></div>
     <div class="card"><h3 style="margin-top:0">Audit Trail</h3><div class="table-wrap"><table><thead><tr><th>Time</th><th>Action</th><th>Detail</th><th>Actor</th></tr></thead><tbody>${(state.actionLog||[]).length ? state.actionLog.slice().reverse().map(x=>`<tr><td>${escapeHtml(x.ts)}</td><td>${escapeHtml(x.action)}</td><td>${escapeHtml(x.detail)}</td><td>${escapeHtml(x.actor)}</td></tr>`).join("") : '<tr><td colspan="4">No audit entries yet.</td></tr>'}</tbody></table></div></div>
@@ -1265,6 +1415,7 @@ async function init(){
   state.selectedScenarioId=scenarios[0]?.id||null;
   state.selectedTenantId=tenants[0]?.id||"";
   state.selectedClientId=tenants[0]?.clients?.[0]?.id||"";
+  syncMeetingTimestamp();
   document.querySelectorAll(".nav-btn[data-tab]").forEach(btn=>btn.onclick=()=>setTab(btn.dataset.tab));
   byId("resetBtn").onclick=()=>location.reload();
   const logoutBtn = byId("logoutBtn"); if(logoutBtn) logoutBtn.onclick=()=>logOff();
